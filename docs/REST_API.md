@@ -150,6 +150,10 @@ GF содержит два независимых результата свер�
 
 Экспортирует строки после применения тех же `q`, `category`, `resultCode`, `moCode`, `sort`, что и таблица. Параметры пагинации игнорируются, экспорт включает весь отфильтрованный набор. Ответ: `200 text/csv; charset=utf-8`, UTF-8 BOM, разделитель `;`, заголовки `ENP;DN_PATIENT_ID;DIAG_CODE;CODE_L;DN_LIST_RESULT_CODE;CODE_P;DN_PLAN_RESULT_CODE`. Имя файла формируется из исходного GF, например `GF34_2609_filtered.csv`. Для больших выгрузок можно заменить синхронный ответ экспортной задачей `POST /exports` + `GET /exports/{id}`; клиент скачивает файл по готовности.
 
+### `GET /api/v1/dn/files/export/by-mo`
+
+Streams a ZIP archive of CSV files containing records from one selected GF file that match a result code. Required query parameters: `fileId` (GF ID), `resultType` (`GST` or `GPT`), and `resultCode` (for example `207` for GST or `307` for GPT). Optional `moCode` limits the archive to one medical organization. Each MO gets its own `MO_<code>.csv` file; if no rows match, the archive is empty. Each UTF-8 BOM CSV uses the columns `MO_CODE;FILE_ID;FILE_NAME;PERIOD;FILE_STATUS;ENP;DN_PATIENT_ID;DIAG_CODE;CODE_L;DN_LIST_RESULT_CODE;CODE_P;DN_PLAN_RESULT_CODE`.
+
 ## 3. Сводка сверки по GF
 
 ### `GET /api/v1/dn/files/{fileId}/analytics`

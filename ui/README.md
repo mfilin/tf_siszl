@@ -9,10 +9,16 @@ npm install
 npm run dev
 ```
 
+UI обращается к REST API по адресу `http://localhost:5080`. Для другого адреса задайте `VITE_API_BASE_URL`, например в файле `.env.local`:
+
+```env
+VITE_API_BASE_URL=http://localhost:5080
+```
+
 Для production-сборки:
 
 ```bash
 npm run build
 ```
 
-Компоненты shadcn/ui находятся в `src/components/ui`; стили темы — в `src/index.css`. В `App.tsx` оставлены локальные демонстрационные данные и логика фильтров, экспорта, карточек и аналитики. Для подключения сервера замените эти данные вызовами REST API из документации.
+Компоненты shadcn/ui находятся в `src/components/ui`; стили темы — в `src/index.css`. Экран журнала, строки GF, карточки деталей и аналитика загружаются из REST API по контракту `../docs/REST_API.md`.
