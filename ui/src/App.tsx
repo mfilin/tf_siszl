@@ -22,6 +22,7 @@ const categoryTone: Record<ResultCategory, string> = {
   missing_gst: 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-900',
 }
 const number = (value: number | null | undefined) => value == null ? '—' : new Intl.NumberFormat('ru-RU').format(value)
+const fileNameWithoutExtension = (fileName: string) => fileName.replace(/\.[^.]+$/, '')
 const statusTone: Record<ApiStatus, string> = { queued: 'text-zinc-700 bg-zinc-50 border-zinc-200', processing: 'text-amber-700 bg-amber-50 border-amber-200', processed: 'text-emerald-700 bg-emerald-50 border-emerald-200', sent: 'text-blue-700 bg-blue-50 border-blue-200', failed: 'text-rose-700 bg-rose-50 border-rose-200' }
 const resultLookupKey = (type: 'GST' | 'GPT', code?: string | number | null) => `${type}:${code ?? ''}`
 function Empty({ children }: { children: string }) { return <div className="px-6 py-14 text-center text-sm text-muted-foreground"><div className="mx-auto mb-3 grid size-10 place-items-center rounded-xl bg-muted"><Filter className="size-4" /></div>{children}</div> }
@@ -43,9 +44,9 @@ export default function App() {
   const [filesLoading, setFilesLoading] = useState(true)
   const [bulkResultSelection, setBulkResultSelection] = useState('')
   const [bulkFileId, setBulkFileId] = useState('')
-  const [bulkFiles, setBulkFiles] = useState<ApiFile[]>([])
-  const [bulkFilesLoading, setBulkFilesLoading] = useState(false)
-  const [bulkFilesError, setBulkFilesError] = useState('')
+  const [gfFiles, setGfFiles] = useState<ApiFile[]>([])
+  const [gfFilesLoading, setGfFilesLoading] = useState(false)
+  const [gfFilesError, setGfFilesError] = useState('')
   const [bulkMoCode, setBulkMoCode] = useState('')
   const [fileQuery, setFileQuery] = useState('')
   const [fileType, setFileType] = useState('all')
@@ -54,6 +55,8 @@ export default function App() {
   const [selectedFile, setSelectedFile] = useState<ApiFile | null>(null)
   const [fileDetailLoading, setFileDetailLoading] = useState(false)
   const [activeFileId, setActiveFileId] = useState('')
+  const [gfFileSearch, setGfFileSearch] = useState('')
+  const [gfFilePickerOpen, setGfFilePickerOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('all')
   const [code, setCode] = useState('all')
@@ -78,8 +81,9 @@ export default function App() {
     return { ...item, type, value: `${type}:${item.code}` }
   }), [dictionaries])
   const selectedMoExportOption = moExportOptions.find(item => item.value === bulkResultSelection)
-  const selectedBulkFile = bulkFiles.find(file => file.id === bulkFileId)
-  const activeFile = files.find(file => file.id === activeFileId) ?? null
+  const selectedBulkFile = gfFiles.find(file => file.id === bulkFileId)
+  const activeFile = files.find(file => file.id === activeFileId) ?? gfFiles.find(file => file.id === activeFileId) ?? null
+  const filteredGfFiles = gfFiles.filter(file => fileNameWithoutExtension(file.fileName).toLocaleLowerCase('ru-RU').includes(gfFileSearch.trim().toLocaleLowerCase('ru-RU')))
 
   useEffect(() => {
     let current = true
@@ -101,22 +105,21 @@ export default function App() {
   }, [fileQuery, fileType, filePeriod, fileStatus])
 
   useEffect(() => {
-    if (tab !== 'mo-export') return
     let current = true
-    setBulkFilesLoading(true); setBulkFilesError('')
+    setGfFilesLoading(true); setGfFilesError('')
     api.files({ type: 'GF', page: 1, pageSize: 100, sort: 'createdAt:desc' })
       .then(async firstPage => {
         const remainingPages = await Promise.all(Array.from({ length: Math.max(0, firstPage.totalPages - 1) }, (_, index) =>
           api.files({ type: 'GF', page: index + 2, pageSize: 100, sort: 'createdAt:desc' })))
         if (!current) return
         const items = [...firstPage.items, ...remainingPages.flatMap(page => page.items)]
-        setBulkFiles(items)
+        setGfFiles(items)
         setBulkFileId(previous => items.some(file => file.id === previous) ? previous : items[0]?.id ?? '')
       })
-      .catch(error => { if (current) setBulkFilesError(error instanceof Error ? error.message : 'Не удалось загрузить список GF-файлов') })
-      .finally(() => { if (current) setBulkFilesLoading(false) })
+      .catch(error => { if (current) setGfFilesError(error instanceof Error ? error.message : 'Не удалось загрузить список GF-файлов') })
+      .finally(() => { if (current) setGfFilesLoading(false) })
     return () => { current = false }
-  }, [tab])
+  }, [])
 
 
   useEffect(() => {
@@ -222,10 +225,10 @@ export default function App() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Файл GF для анализа</label>
-                  <Select value={bulkFileId} disabled={bulkFilesLoading || !bulkFiles.length} onValueChange={value => setBulkFileId(value ?? '')}>
-                    <SelectTrigger><SelectValue placeholder={bulkFilesLoading ? 'Загружаем список GF…' : 'Выберите файл GF'} /></SelectTrigger>
+                  <Select value={bulkFileId} disabled={gfFilesLoading || !gfFiles.length} onValueChange={value => setBulkFileId(value ?? '')}>
+                    <SelectTrigger><SelectValue placeholder={gfFilesLoading ? 'Загружаем список GF…' : 'Выберите файл GF'} /></SelectTrigger>
                     <SelectContent>
-                      {bulkFiles.map(file => <SelectItem key={file.id} value={file.id}>{file.fileName} — {file.period}</SelectItem>)}
+                      {gfFiles.map(file => <SelectItem key={file.id} value={file.id}>{file.fileName} — {file.period}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
@@ -234,13 +237,13 @@ export default function App() {
                   <Input value={bulkMoCode} onChange={event => setBulkMoCode(event.target.value)} placeholder="Все МО, если оставить пустым" />
                 </div>
               </div>
-              {bulkFilesError && <ErrorBox message={bulkFilesError} />}
+              {gfFilesError && <ErrorBox message={gfFilesError} />}
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/30 p-4">
                 <div>
-                  <p className="font-medium">{selectedBulkFile?.fileName ?? (bulkFilesLoading ? 'Загружаем список GF…' : 'Выберите файл GF')} {selectedMoExportOption && `· ${selectedMoExportOption.type} ${selectedMoExportOption.code}`}</p>
+                  <p className="font-medium">{selectedBulkFile?.fileName ?? (gfFilesLoading ? 'Загружаем список GF…' : 'Выберите файл GF')} {selectedMoExportOption && `· ${selectedMoExportOption.type} ${selectedMoExportOption.code}`}</p>
                   <p className="mt-1 text-sm text-muted-foreground">Обрабатывается выбранный GF. Его записи будут разбиты по МО: один CSV-файл на каждую организацию.</p>
                 </div>
-                <Button onClick={exportMoGroup} disabled={!selectedMoExportOption || !bulkFileId || bulkFilesLoading || !!bulkFilesError}>
+                <Button onClick={exportMoGroup} disabled={!selectedMoExportOption || !bulkFileId || gfFilesLoading || !!gfFilesError}>
                   <ArrowDownToLine className="mr-2 size-4" />Скачать ZIP
                 </Button>
               </div>
@@ -249,7 +252,7 @@ export default function App() {
         </TabsContent>
 
         <TabsContent value="content" className="mt-0 space-y-4">
-          <Card className="shadow-none"><CardContent className="flex flex-wrap items-center gap-3 p-3"><span className="text-sm font-medium">Результат GF</span><Select value={activeFileId} onValueChange={value => { setActiveFileId(value ?? ''); setPage(1) }}><SelectTrigger className="min-w-[220px] flex-1 sm:flex-none"><SelectValue placeholder="Выберите GF" /></SelectTrigger><SelectContent>{files.filter(file => file.type === 'GF').map(file => <SelectItem key={file.id} value={file.id}>{file.fileName}</SelectItem>)}</SelectContent></Select>
+          <Card className={`shadow-none ${gfFilePickerOpen ? 'relative z-30 overflow-visible' : ''}`}><CardContent className="flex flex-wrap items-center gap-3 p-3"><span className="text-sm font-medium">Результат GF</span><div className="relative min-w-[220px] flex-1 sm:flex-none"><Input role="combobox" aria-expanded={gfFilePickerOpen} aria-controls="gf-file-options" value={gfFilePickerOpen ? gfFileSearch : activeFile ? fileNameWithoutExtension(activeFile.fileName) : ''} onFocus={() => { setGfFileSearch(''); setGfFilePickerOpen(true) }} onChange={event => { setGfFileSearch(event.target.value); setGfFilePickerOpen(true) }} onBlur={() => window.setTimeout(() => setGfFilePickerOpen(false), 120)} placeholder="Поиск файла GF по названию" autoComplete="off" />{gfFilePickerOpen && <div id="gf-file-options" role="listbox" className="absolute left-0 top-full z-50 mt-1 max-h-64 w-full min-w-[260px] overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">{filteredGfFiles.length ? filteredGfFiles.map(file => <button key={file.id} type="button" role="option" aria-selected={file.id === activeFileId} onMouseDown={event => event.preventDefault()} onClick={() => { setActiveFileId(file.id); setPage(1); setGfFileSearch(''); setGfFilePickerOpen(false) }} className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent hover:text-accent-foreground ${file.id === activeFileId ? 'bg-accent/60' : ''}`}><span>{fileNameWithoutExtension(file.fileName)}</span><span className="ml-3 shrink-0 text-xs text-muted-foreground">{file.period}</span></button>) : <p className="px-2 py-3 text-sm text-muted-foreground">GF-файлы не найдены</p>}</div>}</div>
             <Separator orientation="vertical" className="hidden h-8 sm:block" /><div className="relative min-w-[220px] flex-1"><Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input value={query} onChange={event => { setQuery(event.target.value); setPage(1) }} placeholder="Поиск по ЕНП" className="pl-9" /></div>
             <Select value={category} onValueChange={value => updateFilter(setCategory, value)}><SelectTrigger className="w-[190px]"><SelectValue placeholder="Категория" /></SelectTrigger><SelectContent><SelectItem value="all">Все категории</SelectItem>{categories.map(value => <SelectItem key={value} value={value}>{categoryLabel(value)}</SelectItem>)}</SelectContent></Select>
             <Select value={code} onValueChange={value => updateFilter(setCode, value)}><SelectTrigger className="w-[150px]"><SelectValue placeholder="Код результата" /></SelectTrigger><SelectContent><SelectItem value="all">Все коды</SelectItem>{resultCodes.map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
