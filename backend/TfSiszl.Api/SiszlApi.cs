@@ -8,40 +8,52 @@ internal static class SiszlEndpointMapping
 {
     public static void MapSiszlEndpoints(this WebApplication app)
     {
-        var api = app.MapGroup("/api/v1/dn");
+        var api = app.MapGroup("/api/v1/dn").WithTags("Данные ДН / GF");
         api.MapGet("/files", async (SiszlApi service, [AsParameters] FileQuery query, CancellationToken ct) =>
-            Results.Ok(await service.GetFiles(query, ct)));
+            Results.Ok(await service.GetFiles(query, ct)))
+            .WithSummary("Список файлов")
+            .WithDescription("Возвращает файлы обмена с фильтрами, сортировкой и пагинацией.");
         api.MapGet("/files/summary", async (SiszlApi service, [AsParameters] FileQuery query, CancellationToken ct) =>
-            Results.Ok(await service.GetFileSummary(query, ct)));
+            Results.Ok(await service.GetFileSummary(query, ct)))
+            .WithSummary("Сводка по файлам")
+            .WithDescription("Возвращает сводные показатели с учётом фильтров.");
         api.MapGet("/files/{fileId}", async (string fileId, SiszlApi service, CancellationToken ct) =>
         {
             var file = await service.GetFile(fileId, ct);
             return file is null ? Results.NotFound() : Results.Ok(file);
-        });
+        }).WithSummary("Карточка файла").WithDescription("Возвращает сведения об одном файле по его ID.");
         api.MapGet("/files/{fileId}/records", async (string fileId, SiszlApi service, [AsParameters] RecordQuery query, CancellationToken ct) =>
-            await service.GetRecords(fileId, query, ct));
+            await service.GetRecords(fileId, query, ct))
+            .WithSummary("Записи файла GF")
+            .WithDescription("Возвращает записи выбранного файла с фильтрами и пагинацией.");
         api.MapGet("/files/{fileId}/records/export", async (string fileId, HttpContext context, SiszlApi service, [AsParameters] RecordQuery query, CancellationToken ct) =>
-            await service.ExportRecords(fileId, query, context, ct));
+            await service.ExportRecords(fileId, query, context, ct))
+            .WithSummary("Выгрузка записей файла")
+            .WithDescription("Скачивает записи выбранного файла с учётом фильтров.");
         api.MapGet("/files/export/by-mo", async (HttpContext context, SiszlApi service, [AsParameters] MoGroupExportQuery query, CancellationToken ct) =>
-            await service.ExportByMedicalOrganization(query, context, ct));
+            await service.ExportByMedicalOrganization(query, context, ct))
+            .WithSummary("Выгрузка по МО")
+            .WithDescription("Скачивает архив с отдельным файлом записей для каждой МО.");
         api.MapGet("/files/{fileId}/records/{recordKey}", async (string fileId, string recordKey, SiszlApi service, CancellationToken ct) =>
         {
             var record = await service.GetRecord(fileId, recordKey, ct);
             return record is null ? Results.NotFound() : Results.Ok(record);
-        });
+        }).WithSummary("Запись GF").WithDescription("Возвращает одну запись по ключу в выбранном файле.");
         api.MapGet("/files/{fileId}/analytics", async (string fileId, int? repeatPeriods, int? top, SiszlApi service, CancellationToken ct) =>
         {
             if (repeatPeriods is < 2 or > 24 || top is < 1 or > 20) return Results.BadRequest(new { error = new { code = "INVALID_PARAMETERS", message = "repeatPeriods должен быть от 2 до 24, top — от 1 до 20." } });
             return await service.GetAnalytics(fileId, repeatPeriods ?? 2, top ?? 6, ct);
-        });
-        api.MapGet("/dictionaries/result-codes", async (SiszlApi service, CancellationToken ct) => Results.Ok(await service.GetResultCodes(ct)));
+        }).WithSummary("Аналитика файла").WithDescription("Возвращает аналитику ошибок и повторов за заданное число периодов.");
+        api.MapGet("/dictionaries/result-codes", async (SiszlApi service, CancellationToken ct) => Results.Ok(await service.GetResultCodes(ct)))
+            .WithSummary("Статусы записей")
+            .WithDescription("Возвращает справочник кодов результатов обработки записей.");
         api.MapGet("/dictionaries/diagnoses", () =>
         {
             var path = Path.Combine(AppContext.BaseDirectory, "diagnoses.json");
             return File.Exists(path)
                 ? Results.Content(File.ReadAllText(path, Encoding.UTF8), "application/json; charset=utf-8")
                 : Results.Problem("Справочник диагнозов не найден.", statusCode: StatusCodes.Status503ServiceUnavailable);
-        });
+        }).WithSummary("Диагнозы").WithDescription("Возвращает справочник диагнозов.");
     }
 }
 

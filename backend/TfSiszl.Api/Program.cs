@@ -2,6 +2,17 @@ using Microsoft.Data.SqlClient;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+    {
+        Title = "TF_SISZL API",
+        Version = "v1",
+        Description = "API для просмотра файлов обмена, записей GF, аналитики и экспорта по медицинским организациям."
+    });
+});
+
 var databaseOptions = DatabaseOptions.FromConfiguration(builder.Configuration);
 builder.Services.AddSingleton(databaseOptions);
 builder.Services.AddSingleton<SqlConnectionFactory>();
@@ -14,6 +25,13 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
 
 var app = builder.Build();
 
+app.UseSwagger();
+app.UseSwaggerUI(options =>
+{
+    options.SwaggerEndpoint("/swagger/v1/swagger.json", "TF_SISZL API v1");
+    options.RoutePrefix = "swagger";
+});
+
 app.UseCors();
 
 app.MapGet("/health", () => Results.Ok(new
@@ -21,7 +39,10 @@ app.MapGet("/health", () => Results.Ok(new
     status = "ok",
     service = "tf-siszl-api",
     timestamp = DateTimeOffset.UtcNow
-})).WithName("GetLiveness");
+})).WithName("GetLiveness")
+    .WithTags("Состояние сервиса")
+    .WithSummary("Проверка API")
+    .WithDescription("Показывает, что API запущен.");
 
 app.MapGet("/health/ready", async (SqlConnectionFactory connectionFactory, CancellationToken cancellationToken) =>
 {
@@ -51,7 +72,10 @@ app.MapGet("/health/ready", async (SqlConnectionFactory connectionFactory, Cance
             detail: "The API could not connect to the configured SQL Server database.",
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
-}).WithName("GetReadiness");
+}).WithName("GetReadiness")
+    .WithTags("Состояние сервиса")
+    .WithSummary("Проверка базы данных")
+    .WithDescription("Проверяет подключение API к SQL Server.");
 
 app.MapGet("/api/v1", () => Results.Ok(new
 {
@@ -59,7 +83,9 @@ app.MapGet("/api/v1", () => Results.Ok(new
     version = "v1",
     health = "/health",
     readiness = "/health/ready"
-}));
+})).WithTags("Состояние сервиса")
+    .WithSummary("Информация об API")
+    .WithDescription("Возвращает версию API и адреса проверок состояния.");
 
 app.MapSiszlEndpoints();
 
