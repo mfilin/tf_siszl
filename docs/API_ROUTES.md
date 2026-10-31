@@ -19,6 +19,7 @@ OpenAPI JSON: `http://localhost:5080/swagger/v1/swagger.json`.
 | GET | `/api/v1/dn/files/summary` | Сводные показатели файлов с теми же фильтрами |
 | GET | `/api/v1/dn/files/{fileId}` | Карточка файла |
 | GET | `/api/v1/dn/files/{fileId}/records` | Строки GF; фильтры: `q`, `category`, `resultCode`, `moCode`; пагинация и `sort` |
+| GET | `/api/v1/dn/files/{fileId}/records/count` | Отдельный подсчёт строк GF с теми же фильтрами |
 | GET | `/api/v1/dn/files/{fileId}/records/{recordKey}` | Одна запись GF |
 | GET | `/api/v1/dn/files/{fileId}/records/export` | Выгрузка строк выбранного файла с применёнными фильтрами |
 | GET | `/api/v1/dn/files/export/by-mo` | Групповая выгрузка GF по МО с фильтром по статусу результата; параметры: `resultType`, `resultCode`, `fileId`, `moCode` |

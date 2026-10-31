@@ -45,7 +45,8 @@ export type RecordItem = {
   moCode?: string | null
   gisEvidence?: { fileName?: string; code?: string; invoiceNumber?: string; invoiceDate?: string; caseId?: string; serviceId?: string; historyNumber?: string; diagnosisCode?: string; moCode?: string; date?: string } | null
 }
-export type RecordsPage = Page<RecordItem> & { fileId: string; fileName: string }
+export type RecordsPage = { items: RecordItem[]; page: number; pageSize: number; hasMore: boolean; fileId: string; fileName: string }
+export type RecordCount = { fileId: string; fileName: string; count: number }
 export type FileSummary = { totalFiles: number; outboundGstGpt: number; inboundGf: number; failedFiles: number; asOf: string }
 export type Analytics = {
   fileId: string; fileName: string; recordCount: number; checks: { gst: number; gpt: number }
@@ -84,6 +85,7 @@ export const api = {
   fileSummary: (filters: Pick<FileFilters, 'periodFrom' | 'periodTo' | 'type' | 'status'>) => request<FileSummary>(`/api/v1/dn/files/summary${queryString(filters)}`),
   file: (fileId: string) => request<ApiFile>(`/api/v1/dn/files/${encodeURIComponent(fileId)}`),
   records: (fileId: string, filters: RecordFilters) => request<RecordsPage>(`/api/v1/dn/files/${encodeURIComponent(fileId)}/records${queryString(filters)}`),
+  recordCount: (fileId: string, filters: RecordFilters) => request<RecordCount>(`/api/v1/dn/files/${encodeURIComponent(fileId)}/records/count${queryString(filters)}`),
   record: (fileId: string, recordKey: string) => request<RecordItem>(`/api/v1/dn/files/${encodeURIComponent(fileId)}/records/${encodeURIComponent(recordKey)}`),
   analytics: (fileId: string, repeatPeriods = 2, top = 6) => request<Analytics>(`/api/v1/dn/files/${encodeURIComponent(fileId)}/analytics${queryString({ repeatPeriods, top })}`),
   resultCodes: () => request<ResultDictionaries>('/api/v1/dn/dictionaries/result-codes'),

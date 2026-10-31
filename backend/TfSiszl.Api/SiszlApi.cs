@@ -26,6 +26,10 @@ internal static class SiszlEndpointMapping
             await service.GetRecords(fileId, query, ct))
             .WithSummary("Записи файла GF")
             .WithDescription("Возвращает записи выбранного файла с фильтрами и пагинацией.");
+        api.MapGet("/files/{fileId}/records/count", async (string fileId, SiszlApi service, [AsParameters] RecordQuery query, CancellationToken ct) =>
+            await service.GetRecordCount(fileId, query, ct))
+            .WithSummary("Количество записей")
+            .WithDescription("Отдельно считает записи файла GF с учётом фильтров.");
         api.MapGet("/files/{fileId}/records/export", async (string fileId, HttpContext context, SiszlApi service, [AsParameters] RecordQuery query, CancellationToken ct) =>
             await service.ExportRecords(fileId, query, context, ct))
             .WithSummary("Выгрузка записей файла")
@@ -84,7 +88,7 @@ internal sealed record ResultDictionaries(IReadOnlyList<ResultCodeDto> Gst, IRea
 internal sealed record ResultBranchDto(string? Period, string? FileName, string? Code, object? ResultCode, string? ResultDate, string? ResultDescription);
 internal sealed record PatientDto(int? SexCode, string? BirthDate, string? SmoCode, string? AttachMoCode, string? AttachDate, string? SmoRegionCode);
 internal sealed record RecordDto(string Id, string? Enp, string? DnPatientId, string? DiagnosisCode, int? GroupRhCode, string? GroupRhProfile, string? GroupRhName, string? DnRuleInName, PatientDto Patient, ResultBranchDto? DnList, ResultBranchDto? DnPlan, DateTime? InsertedAt, DateTime? UpdatedAt, string? MoCode, object? GisEvidence = null);
-internal sealed record RecordPage(string FileId, string FileName, IReadOnlyList<RecordDto> Items, int Page, int PageSize, int TotalItems, int TotalPages);
+internal sealed record RecordPage(string FileId, string FileName, IReadOnlyList<RecordDto> Items, int Page, int PageSize, bool HasMore);
 
 internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseOptions databaseOptions)
 {
@@ -165,7 +169,7 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
         var (where, parameters) = RecordFilters(query);
         parameters.Add("ImportId", ParseFileId(fileId, "gf-"));
         parameters.Add("Offset", (query.Page - 1) * query.PageSize);
-        parameters.Add("PageSize", query.PageSize);
+        parameters.Add("FetchSize", query.PageSize + 1);
         var sql = $"""
             SELECT p.id AS Id, p.ENP AS Enp, p.DN_PATIENT_ID AS DnPatientId, p.GROUP_RH_DS AS DiagnosisCode, p.GROUP_RH_CD AS GroupRhCode, p.GROUP_RH_PROFILE AS GroupRhProfile, p.GROUP_RH_NAME AS GroupRhName, p.DN_RULE_IN_NAME AS DnRuleInName,
               p.W AS SexCode, p.DR AS BirthDate, p.SMO AS SmoCode, p.ATTACH_MCODE AS AttachMoCode, p.ATTACH_DATE AS AttachDate, p.SMO_REGION_CD AS SmoRegionCode,
@@ -176,11 +180,31 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
             WHERE p.import_id=@ImportId {where}
             """;
         await using var connection = OpenConnection();
-        var count = await connection.ExecuteScalarAsync<int>(new CommandDefinition($"SELECT COUNT(1) FROM ({sql}) q;", parameters, commandTimeout: 120, cancellationToken: ct));
         var sort = query.Sort?.ToLowerInvariant() switch { "enp:desc" => "Enp DESC", "resultdate:desc" => "COALESCE(ListResultDate,PlanResultDate) DESC, Id", _ => "Enp ASC, Id ASC" };
-        var pageRows = await connection.QueryAsync<RecordDb>(new CommandDefinition($"SELECT * FROM ({sql}) q ORDER BY {sort} OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;", parameters, commandTimeout: 120, cancellationToken: ct));
+        var pageRows = (await connection.QueryAsync<RecordDb>(new CommandDefinition($"SELECT * FROM ({sql}) q ORDER BY {sort} OFFSET @Offset ROWS FETCH NEXT @FetchSize ROWS ONLY;", parameters, commandTimeout: 120, cancellationToken: ct))).AsList();
+        var hasMore = pageRows.Count > query.PageSize;
+        if (hasMore) pageRows.RemoveAt(pageRows.Count - 1);
         var items = pageRows.Select(row => ToRecord(row)).ToList();
-        return Results.Ok(new RecordPage(file.Id, file.FileName, items, query.Page, query.PageSize, count, (int)Math.Ceiling(count / (double)query.PageSize)));
+        return Results.Ok(new RecordPage(file.Id, file.FileName, items, query.Page, query.PageSize, hasMore));
+    }
+
+    public async Task<IResult> GetRecordCount(string fileId, RecordQuery query, CancellationToken ct)
+    {
+        var file = await GetFile(fileId, ct);
+        if (file is null) return Results.NotFound();
+        if (file.Type != "GF") return Results.Conflict(new { error = new { code = "FILE_TYPE_NOT_SUPPORTED", message = "Строки доступны только для файлов GF." } });
+        var (where, parameters) = RecordFilters(query);
+        parameters.Add("ImportId", ParseFileId(fileId, "gf-"));
+        const string sql = """
+            SELECT COUNT_BIG(1)
+            FROM dbo.gf_person p
+            LEFT JOIN dbo.gf_dn_list_result l ON l.person_id=p.id
+            LEFT JOIN dbo.gf_dn_plan_result g ON g.person_id=p.id
+            WHERE p.import_id=@ImportId
+            """;
+        await using var connection = OpenConnection();
+        var count = await connection.ExecuteScalarAsync<long>(new CommandDefinition($"{sql} {where};", parameters, commandTimeout: 120, cancellationToken: ct));
+        return Results.Ok(new { fileId = file.Id, fileName = file.FileName, count });
     }
 
     public async Task<IResult> GetRecord(string fileId, string recordKey, CancellationToken ct)
