@@ -90,7 +90,8 @@ export const api = {
   analytics: (fileId: string, repeatPeriods = 2, top = 6) => request<Analytics>(`/api/v1/dn/files/${encodeURIComponent(fileId)}/analytics${queryString({ repeatPeriods, top })}`),
   resultCodes: () => request<ResultDictionaries>('/api/v1/dn/dictionaries/result-codes'),
   exportUrl: (fileId: string, filters: RecordFilters) => `${apiBaseUrl}/api/v1/dn/files/${encodeURIComponent(fileId)}/records/export${queryString(filters)}`,
-  d05TestExportUrl: (fileId: string, moCode?: string) => `${apiBaseUrl}/api/v1/dn/files/${encodeURIComponent(fileId)}/export/d05-test${queryString({ moCode })}`,
+  d05TestExportUrl: (fileId: string, moCode: string | undefined, progressId: string) => `${apiBaseUrl}/api/v1/dn/files/${encodeURIComponent(fileId)}/export/d05-test${queryString({ moCode, progressId })}`,
+  d05ProgressUrl: (progressId: string) => `${apiBaseUrl}/api/v1/dn/files/export/d05-test-progress/${encodeURIComponent(progressId)}`,
   moGroupExportUrl: (filters: { resultType: 'GST' | 'GPT'; resultCode: string | number; fileId: string; moCode?: string }) => `${apiBaseUrl}/api/v1/dn/files/export/by-mo${queryString(filters)}`,
 }
 
