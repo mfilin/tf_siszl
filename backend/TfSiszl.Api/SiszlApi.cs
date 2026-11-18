@@ -34,24 +34,24 @@ internal static class SiszlEndpointMapping
             await service.ExportRecords(fileId, query, context, ct))
             .WithSummary("Выгрузка записей файла")
             .WithDescription("Скачивает записи выбранного файла с учётом фильтров.");
-        api.MapGet("/files/{fileId}/export/d05-test", async (string fileId, string? moCode, Guid progressId, HttpContext context, SiszlApi service, D05ExportProgressStore progress, CancellationToken ct) =>
+        api.MapGet("/files/{fileId}/export/d05-test", async (string fileId, string? moCode, Guid progressId, HttpContext context, SiszlApi service, IExportProgressStore progress, CancellationToken ct) =>
         {
-            progress.Begin(progressId);
+            progress.Start(progressId, "Подготовка выборки");
             try
             {
                 var result = await service.ExportD05Test(fileId, moCode, progressId, context, ct);
-                progress.Complete(progressId);
+                progress.Complete(progressId, "Выгрузка завершена");
                 return result;
             }
             catch (Exception ex)
             {
-                progress.Fail(progressId, ex.Message);
+                progress.Fail(progressId, "Ошибка выгрузки", ex.Message);
                 throw;
             }
         })
             .WithSummary("Тестовая выгрузка D05")
             .WithDescription("Формирует тестовые ZIP-пакеты D05 по МО для выбранного GF; ФИО синтетические.");
-        api.MapGet("/files/export/d05-test-progress/{progressId:guid}", (Guid progressId, D05ExportProgressStore progress) =>
+        api.MapGet("/files/export/d05-test-progress/{progressId:guid}", (Guid progressId, IExportProgressStore progress) =>
                 progress.Get(progressId) is { } status ? Results.Ok(status) : Results.NotFound())
             .WithSummary("Прогресс D05")
             .WithDescription("Возвращает число сформированных файлов по МО.");        api.MapGet("/files/export/by-mo", async (HttpContext context, SiszlApi service, [AsParameters] MoGroupExportQuery query, CancellationToken ct) =>
@@ -112,7 +112,7 @@ internal sealed record RecordPage(string FileId, string FileName, IReadOnlyList<
 internal sealed record D05TaskData(int Zap, string TaskId, string Enp, string? DnPatientId, string Surname, string Name, string Patronymic, DateTime Birthday, int Sex, int GroupRhCode, string GroupRhName, string DiagnosisCode, string? GroupRhProfile, int? DoctorType, DateTime? TriggerDate, DateTime? TriggerInvoiceDate, string? TriggerDiagnosisCode, string? TriggerMoCode, string? TriggerHistoryNumber, string? TriggerCaseId);
 internal sealed record D05Header(string MoCode, string Name, string SourceGfName, int Year, int Month, DateTime CreatedDate, DateTime Deadline, string PackNumber, int TaskCount);
 
-internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseOptions databaseOptions, D05ExportProgressStore progressStore)
+internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseOptions databaseOptions, IExportProgressStore progressStore)
 {
     private const string FileCte = """
         WITH files AS (
@@ -406,7 +406,7 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
             countCommand.Parameters.AddWithValue("@ImportId", importId);
             if (requestedMo is not null) countCommand.Parameters.AddWithValue("@MoCode", requestedMo);
             var fileCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
-            progressStore.SetTotal(progressId, fileCount);
+            progressStore.SetTotal(progressId, fileCount, fileCount == 0 ? "Нет файлов для выгрузки" : "Чтение записей");
         }
         var existsSql = "SELECT TOP (1) 1 FROM dbo.gf_person p JOIN dbo.gf_dn_list_result l ON l.person_id=p.id WHERE p.import_id=@ImportId AND l.DN_LIST_RESULT_CODE='207' AND LTRIM(RTRIM(p.ATTACH_MCODE)) LIKE '34%'" + (requestedMo is null ? ";" : " AND p.ATTACH_MCODE=@MoCode;");
         await using (var existsCommand = new SqlCommand(existsSql, connection))
@@ -475,7 +475,7 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
                 var packageEntry = archive.CreateEntry($"{name}.zip", System.IO.Compression.CompressionLevel.Fastest);
                 await using var packageStream = packageEntry.Open();
                 await packageStream.WriteAsync(packageBytes, ct);
-                progressStore.FileCompleted(progressId, currentMo);
+                progressStore.Advance(progressId, 1, $"Сформирован файл МО {currentMo}");
                 packageTasks.Clear();
             }
 

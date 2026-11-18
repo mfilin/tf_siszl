@@ -16,7 +16,7 @@ builder.Services.AddSwaggerGen(options =>
 var databaseOptions = DatabaseOptions.FromConfiguration(builder.Configuration);
 builder.Services.AddSingleton(databaseOptions);
 builder.Services.AddSingleton<SqlConnectionFactory>();
-builder.Services.AddSingleton<D05ExportProgressStore>();
+builder.Services.AddSingleton<IExportProgressStore, InMemoryExportProgressStore>();
 builder.Services.AddScoped<SiszlApi>();
 
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
