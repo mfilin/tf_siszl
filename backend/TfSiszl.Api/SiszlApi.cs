@@ -34,6 +34,10 @@ internal static class SiszlEndpointMapping
             await service.ExportRecords(fileId, query, context, ct))
             .WithSummary("Выгрузка записей файла")
             .WithDescription("Скачивает записи выбранного файла с учётом фильтров.");
+        api.MapGet("/files/{fileId}/export/d05-test", async (string fileId, string? moCode, HttpContext context, SiszlApi service, CancellationToken ct) =>
+            await service.ExportD05Test(fileId, moCode, context, ct))
+            .WithSummary("Тестовая выгрузка D05")
+            .WithDescription("Формирует тестовые ZIP-пакеты D05 по МО для выбранного GF; ФИО синтетические.");
         api.MapGet("/files/export/by-mo", async (HttpContext context, SiszlApi service, [AsParameters] MoGroupExportQuery query, CancellationToken ct) =>
             await service.ExportByMedicalOrganization(query, context, ct))
             .WithSummary("Выгрузка по МО")
@@ -89,6 +93,8 @@ internal sealed record ResultBranchDto(string? Period, string? FileName, string?
 internal sealed record PatientDto(int? SexCode, string? BirthDate, string? SmoCode, string? AttachMoCode, string? AttachDate, string? SmoRegionCode);
 internal sealed record RecordDto(string Id, string? Enp, string? DnPatientId, string? DiagnosisCode, int? GroupRhCode, string? GroupRhProfile, string? GroupRhName, string? DnRuleInName, PatientDto Patient, ResultBranchDto? DnList, ResultBranchDto? DnPlan, DateTime? InsertedAt, DateTime? UpdatedAt, string? MoCode, object? GisEvidence = null);
 internal sealed record RecordPage(string FileId, string FileName, IReadOnlyList<RecordDto> Items, int Page, int PageSize, bool HasMore);
+internal sealed record D05TaskData(int Zap, string TaskId, string Enp, string? DnPatientId, string Surname, string Name, string Patronymic, DateTime Birthday, int Sex, int GroupRhCode, string GroupRhName, string DiagnosisCode, string? GroupRhProfile, int? DoctorType, DateTime? TriggerDate, DateTime? TriggerInvoiceDate, string? TriggerDiagnosisCode, string? TriggerMoCode, string? TriggerHistoryNumber, string? TriggerCaseId);
+internal sealed record D05Header(string MoCode, string Name, string SourceGfName, int Year, int Month, DateTime CreatedDate, DateTime Deadline, string PackNumber, int TaskCount);
 
 internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseOptions databaseOptions)
 {
@@ -350,6 +356,182 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
         return Results.Empty;
     }
 
+    public async Task<IResult> ExportD05Test(string fileId, string? moCode, HttpContext context, CancellationToken ct)
+    {
+        var file = await GetFile(fileId, ct);
+        if (file is null) return Results.NotFound();
+        if (file.Type != "GF") return Results.Conflict(new { error = new { code = "FILE_TYPE_NOT_SUPPORTED", message = "Пакет D05 формируется по файлу GF." } });
+        if (!DateTime.TryParseExact(file.Period, "yyyy-MM", CultureInfo.InvariantCulture, DateTimeStyles.None, out var sourcePeriod))
+            return Results.Conflict(new { error = new { code = "INVALID_GF_PERIOD", message = "У файла GF должен быть период в формате ГГГГ-ММ." } });
+
+        var importId = ParseFileId(fileId, "gf-");
+        var requestedMo = string.IsNullOrWhiteSpace(moCode) ? null : moCode.Trim();
+        await using var connection = OpenConnection();
+        await connection.OpenAsync(ct);
+        var fileCountSql = """
+            WITH candidates AS (
+                SELECT p.ATTACH_MCODE AS MoCode, p.ENP, p.DR, p.W, p.GROUP_RH_CD, p.GROUP_RH_DS,
+                    ROW_NUMBER() OVER (PARTITION BY p.ENP, p.GROUP_RH_CD ORDER BY p.id) AS duplicate_number
+                FROM dbo.gf_person p
+                INNER JOIN dbo.gf_dn_list_result l ON l.person_id=p.id AND l.DN_LIST_RESULT_CODE='207'
+                WHERE p.import_id=@ImportId
+            )
+            SELECT COUNT(DISTINCT MoCode)
+            FROM candidates
+            WHERE duplicate_number=1
+              AND MoCode IS NOT NULL AND LTRIM(RTRIM(MoCode))<>'' AND LEN(LTRIM(RTRIM(MoCode)))<=6
+              AND ENP IS NOT NULL AND LEN(LTRIM(RTRIM(ENP))) BETWEEN 1 AND 16
+              AND DR IS NOT NULL AND W IN (1,2)
+              AND GROUP_RH_CD BETWEEN 0 AND 999
+              AND GROUP_RH_DS IS NOT NULL AND LEN(LTRIM(RTRIM(GROUP_RH_DS))) BETWEEN 1 AND 6
+            """ + (requestedMo is null ? ";" : " AND MoCode=@MoCode;");        await using (var countCommand = new SqlCommand(fileCountSql, connection))
+        {
+            countCommand.Parameters.AddWithValue("@ImportId", importId);
+            if (requestedMo is not null) countCommand.Parameters.AddWithValue("@MoCode", requestedMo);
+            var fileCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
+            context.Response.Headers["X-D05-Total-Files"] = fileCount.ToString(CultureInfo.InvariantCulture);
+        }
+        var existsSql = "SELECT TOP (1) 1 FROM dbo.gf_person p JOIN dbo.gf_dn_list_result l ON l.person_id=p.id WHERE p.import_id=@ImportId AND l.DN_LIST_RESULT_CODE='207'" + (requestedMo is null ? ";" : " AND p.ATTACH_MCODE=@MoCode;");
+        await using (var existsCommand = new SqlCommand(existsSql, connection))
+        {
+            existsCommand.Parameters.AddWithValue("@ImportId", importId);
+            if (requestedMo is not null) existsCommand.Parameters.AddWithValue("@MoCode", requestedMo);
+            if (await existsCommand.ExecuteScalarAsync(ct) is null)
+                return Results.Problem(title: "Нет записей с кодом 207", detail: "В выбранном GF и МО не найдено записей с DN_LIST_RESULT_CODE=207.", statusCode: StatusCodes.Status422UnprocessableEntity);
+        }
+
+        var moCondition = requestedMo is null ? string.Empty : " AND p.ATTACH_MCODE=@MoCode";
+        var sql = """
+            WITH candidates AS (
+                SELECT p.id AS Id, p.ATTACH_MCODE AS MoCode, p.ENP AS Enp, p.DN_PATIENT_ID AS DnPatientId,
+                    p.W AS SexCode, p.DR AS BirthDate, p.GROUP_RH_CD AS GroupRhCode,
+                    p.GROUP_RH_DS AS DiagnosisCode, p.GROUP_RH_PROFILE AS GroupRhProfile, p.DN_PRVS AS DoctorType,
+                    ROW_NUMBER() OVER (PARTITION BY p.ENP, p.GROUP_RH_CD ORDER BY p.id) AS duplicate_number
+                FROM dbo.gf_person p
+                INNER JOIN dbo.gf_dn_list_result l ON l.person_id=p.id AND l.DN_LIST_RESULT_CODE='207'
+                WHERE p.import_id=@ImportId
+            """ + moCondition + """
+            ), selected AS (
+                SELECT * FROM candidates WHERE duplicate_number=1
+            ), trigger_ids AS (
+                SELECT t.person_id, MIN(t.id) AS trigger_id
+                FROM dbo.gf_trigger t
+                INNER JOIN selected s ON s.Id=t.person_id
+                GROUP BY t.person_id
+            )
+            SELECT s.Id, s.MoCode, s.Enp, s.DnPatientId, s.SexCode, s.BirthDate, s.GroupRhCode,
+                s.DiagnosisCode, s.GroupRhProfile, s.DoctorType,
+                t.TRIGGER_DT AS TriggerDate, t.TRIGGER_DSCHET AS TriggerInvoiceDate,
+                t.TRIGGER_DS_CD AS TriggerDiagnosisCode, t.TRIGGER_MCODE AS TriggerMoCode,
+                t.TRIGGER_SL_NHISTORY AS TriggerHistoryNumber, t.TRIGGER_IDCASE AS TriggerCaseId
+            FROM selected s
+            LEFT JOIN trigger_ids ti ON ti.person_id=s.Id
+            LEFT JOIN dbo.gf_trigger t ON t.id=ti.trigger_id
+            ORDER BY s.MoCode, s.Enp, s.GroupRhCode, s.Id;
+            """;
+
+        var generatedOn = DateTime.UtcNow.Date;
+        var deadline = new DateTime(generatedOn.Year, generatedOn.Month, 16);
+        var sourceName = Path.GetFileNameWithoutExtension(file.FileName);
+        var yyMm = sourcePeriod.ToString("yyMM", CultureInfo.InvariantCulture);
+        var baseName = $"D05_TEST_{sourceName}";
+        var skipped = new Dictionary<string, int>(StringComparer.Ordinal);
+        void Skip(string reason) => skipped[reason] = skipped.GetValueOrDefault(reason) + 1;
+        var emittedCount = 0;
+        string? currentMo = null;
+        var packageTasks = new List<D05TaskData>();
+
+        context.Response.ContentType = "application/zip";
+        context.Response.Headers.ContentDisposition = $"attachment; filename=\"{baseName}.zip\"";
+        context.Response.Headers["X-D05-Test-Mode"] = "synthetic-person-data";
+        using var responseStream = new AsyncResponseStream(context.Response.Body);
+        using (var archive = new System.IO.Compression.ZipArchive(responseStream, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: true))
+        {
+            async Task WritePackageAsync()
+            {
+                if (currentMo is null || packageTasks.Count == 0) { packageTasks.Clear(); return; }
+                var packNumber = "001";
+                var name = $"D05M{currentMo}T34_{yyMm}{packNumber}";
+                var header = new D05Header(currentMo, name, sourceName, sourcePeriod.Year, sourcePeriod.Month, generatedOn, deadline, packNumber, packageTasks.Count);
+                var packageBytes = D05PackageExport.CreateZip(header, packageTasks);
+                var packageEntry = archive.CreateEntry($"{name}.zip", System.IO.Compression.CompressionLevel.Fastest);
+                await using var packageStream = packageEntry.Open();
+                await packageStream.WriteAsync(packageBytes, ct);
+                packageTasks.Clear();
+            }
+
+            await using (var command = new SqlCommand(sql, connection) { CommandTimeout = 300 })
+            {
+                command.Parameters.AddWithValue("@ImportId", importId);
+                if (requestedMo is not null) command.Parameters.AddWithValue("@MoCode", requestedMo);
+                await using var reader = await command.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var rowMo = reader.IsDBNull(1) ? null : reader.GetString(1).Trim();
+                    if (!string.Equals(rowMo, currentMo, StringComparison.Ordinal))
+                    {
+                        await WritePackageAsync();
+                        currentMo = rowMo;
+                    }
+
+                    if (string.IsNullOrEmpty(rowMo)) { Skip("нет ATTACH_MCODE"); continue; }
+                    if (rowMo.Length > 6) { Skip("ATTACH_MCODE длиннее 6 знаков"); continue; }
+                    var enp = reader.IsDBNull(2) ? null : reader.GetString(2).Trim();
+                    if (string.IsNullOrEmpty(enp) || enp.Length > 16) { Skip("нет корректного ЕНП"); continue; }
+                    if (reader.IsDBNull(5)) { Skip("нет даты рождения"); continue; }
+                    if (reader.IsDBNull(4) || reader.GetInt32(4) is not (1 or 2)) { Skip("пол не равен 1 или 2"); continue; }
+                    if (reader.IsDBNull(6) || reader.GetInt32(6) is < 0 or > 999) { Skip("нет корректного GROUP_RH_CD"); continue; }
+                    var diagnosis = reader.IsDBNull(7) ? null : reader.GetString(7).Trim();
+                    if (string.IsNullOrEmpty(diagnosis) || diagnosis.Length > 6) { Skip("нет корректного GROUP_RH_DS"); continue; }
+
+                    var sex = reader.GetInt32(4);
+                    var groupCode = reader.GetInt32(6);
+                    var (surname, name, patronymic) = D05TestNames.For(enp, sex);
+                    var taskId = (emittedCount + 1).ToString(CultureInfo.InvariantCulture);
+                    var profile = reader.IsDBNull(8) ? null : reader.GetString(8).Trim();
+                    packageTasks.Add(new D05TaskData(
+                        Zap: packageTasks.Count + 1,
+                        TaskId: taskId,
+                        Enp: enp,
+                        DnPatientId: reader.IsDBNull(3) ? null : LimitD05Text(reader.GetString(3), 36),
+                        Surname: surname,
+                        Name: name,
+                        Patronymic: patronymic,
+                        Birthday: reader.GetDateTime(5),
+                        Sex: sex,
+                        GroupRhCode: groupCode,
+                        GroupRhName: $"group_rh={groupCode}",
+                        DiagnosisCode: diagnosis,
+                        GroupRhProfile: string.IsNullOrWhiteSpace(profile) ? null : profile[..Math.Min(100, profile.Length)],
+                        DoctorType: !reader.IsDBNull(9) && reader.GetInt32(9) is >= 0 and <= 9999 ? reader.GetInt32(9) : null,
+                        TriggerDate: reader.IsDBNull(10) ? null : reader.GetDateTime(10),
+                        TriggerInvoiceDate: reader.IsDBNull(11) ? null : reader.GetDateTime(11),
+                        TriggerDiagnosisCode: reader.IsDBNull(12) ? null : reader.GetString(12),
+                        TriggerMoCode: reader.IsDBNull(13) ? null : reader.GetString(13),
+                        TriggerHistoryNumber: reader.IsDBNull(14) ? null : reader.GetString(14),
+                        TriggerCaseId: reader.IsDBNull(15) ? null : reader.GetString(15)));
+                    emittedCount++;
+                }
+            }
+            await WritePackageAsync();
+
+            var readme = archive.CreateEntry("README_TEST.txt", System.IO.Compression.CompressionLevel.Fastest);
+            await using (var readmeStream = readme.Open())
+            await using (var readmeWriter = new StreamWriter(readmeStream, new UTF8Encoding(false)))
+            {
+                await readmeWriter.WriteLineAsync("TEST D05 package set. Do not send these files to medical organizations.");
+                await readmeWriter.WriteLineAsync("Names are synthetic; IDPAC=0; TASK_ID is sequential from 1 across this export; REPEAT_CNT=1; previous task is omitted.");
+                await readmeWriter.WriteLineAsync("CODE_MO and CODEM are copied from ATTACH_MCODE. Dead/uninsured exclusions are not applied.");
+                await readmeWriter.WriteLineAsync("GROUP_RH_NAME is generated as group_rh={GROUP_RH_CD}. TRIGGER is copied when available.");
+                await readmeWriter.WriteLineAsync($"Source GF: {file.FileName}; D05 tasks: {emittedCount}; skipped: {skipped.Values.Sum()}.");
+                foreach (var item in skipped.OrderBy(x => x.Key, StringComparer.Ordinal))
+                    await readmeWriter.WriteLineAsync($"Skipped ({item.Value}): {item.Key}.");
+            }
+        }
+        await context.Response.Body.FlushAsync(ct);
+        return Results.Empty;
+    }
+
     public async Task<ResultDictionaries> GetResultCodes(CancellationToken ct)
     {
         await using var connection = OpenConnection();
@@ -493,6 +675,7 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
 
     private static string EscapeLike(string value) => value.Replace("[", "[[]").Replace("%", "[%]").Replace("_", "[_]");
     private static string Csv(string value) => value.Contains(';') || value.Contains('"') || value.Contains('\r') || value.Contains('\n') ? $"\"{value.Replace("\"", "\"\"")}\"" : value;
+    private static string? LimitD05Text(string value, int length) { var trimmed = value.Trim(); return trimmed.Length is > 0 && trimmed.Length <= length ? trimmed : null; }
 
     private sealed class AsyncResponseStream(Stream inner) : Stream
     {

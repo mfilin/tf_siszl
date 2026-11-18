@@ -22,6 +22,7 @@ OpenAPI JSON: `http://localhost:5080/swagger/v1/swagger.json`.
 | GET | `/api/v1/dn/files/{fileId}/records/count` | Отдельный подсчёт строк GF с теми же фильтрами |
 | GET | `/api/v1/dn/files/{fileId}/records/{recordKey}` | Одна запись GF |
 | GET | `/api/v1/dn/files/{fileId}/records/export` | Выгрузка строк выбранного файла с применёнными фильтрами |
+| GET | `/api/v1/dn/files/{fileId}/export/d05-test` | Тестовые D05 ZIP-пакеты по МО; необязательный фильтр `moCode` |
 | GET | `/api/v1/dn/files/export/by-mo` | Групповая выгрузка GF по МО с фильтром по статусу результата; параметры: `resultType`, `resultCode`, `fileId`, `moCode` |
 | GET | `/api/v1/dn/files/{fileId}/analytics` | Аналитика повторяющихся ошибок; параметры: `repeatPeriods` (2–24), `top` (1–20) |
 | GET | `/api/v1/dn/dictionaries/result-codes` | Справочник статусов результата |

@@ -46,6 +46,7 @@ docker compose up --build -d
 - `GET /api/v1/dn/files/{fileId}` — карточка файла.
 - `GET /api/v1/dn/files/{fileId}/records` — страницы строк GF с поиском и фильтрами; `/records/{recordKey}` — полная карточка строки.
 - `GET /api/v1/dn/files/{fileId}/records/export` — потоковый CSV с теми же фильтрами.
+- `GET /api/v1/dn/files/{fileId}/export/d05-test?moCode=010013` — тестовая выгрузка D05: внешний ZIP с отдельным ZIP/XML на каждую МО; `moCode` необязателен. ФИО синтетические, `IDPAC=0`, коды МО копируются из `ATTACH_MCODE`; не использовать для отправки в МО.
 - `GET /api/v1/dn/files/export/by-mo?fileId=gf-9&resultType=GST&resultCode=207` — анализ одного GF-файла и ZIP-архив с отдельным CSV на каждую МО; код МО (`moCode`) необязательный.
 - `GET /api/v1/dn/files/{fileId}/analytics` — категории, частые коды и повторяющиеся ошибки по последовательным периодам.
 - `GET /api/v1/dn/dictionaries/result-codes` и `/diagnoses` — справочники из SQL и Приложения 3.

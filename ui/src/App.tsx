@@ -65,6 +65,10 @@ export default function App() {
   const [recordsPage, setRecordsPage] = useState<RecordsPage | null>(null)
   const [recordsLoading, setRecordsLoading] = useState(false)
   const [recordsError, setRecordsError] = useState('')
+  const [d05ExportLoading, setD05ExportLoading] = useState(false)
+  const [d05ExportError, setD05ExportError] = useState('')
+  const [d05ExportProgress, setD05ExportProgress] = useState(0)
+  const [d05ExportFileCount, setD05ExportFileCount] = useState<number | null>(null)
   const [recordCountOpen, setRecordCountOpen] = useState(false)
   const [recordCountLoading, setRecordCountLoading] = useState(false)
   const [recordCount, setRecordCount] = useState<number | null>(null)
@@ -159,6 +163,44 @@ export default function App() {
     if (!activeFileId) return
     const href = api.exportUrl(activeFileId, { q: query || undefined, category: category === 'all' ? undefined : category as ResultCategory, resultCode: code === 'all' ? undefined : Number(code), moCode: mo === 'all' ? undefined : mo, sort: 'enp:asc' })
     const link = document.createElement('a'); link.href = href; link.download = ''; document.body.appendChild(link); link.click(); link.remove()
+  }
+  const exportD05Test = async () => {
+    if (!activeFileId) return
+    setD05ExportLoading(true); setD05ExportError(''); setD05ExportProgress(1); setD05ExportFileCount(null)
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        const request = new XMLHttpRequest()
+        request.open('GET', api.d05TestExportUrl(activeFileId, mo === 'all' ? undefined : mo))
+        request.responseType = 'blob'
+        request.setRequestHeader('Accept', 'application/zip, application/problem+json')
+        const preparing = window.setInterval(() => setD05ExportProgress(value => Math.min(9, value + 1)), 700)
+        request.onprogress = event => {
+          const fileCount = Number(request.getResponseHeader('X-D05-Total-Files'))
+          if (Number.isFinite(fileCount)) setD05ExportFileCount(fileCount)
+          setD05ExportProgress(event.lengthComputable && event.total > 0
+            ? Math.max(10, Math.min(99, 10 + Math.floor(event.loaded / event.total * 89)))
+            : value => Math.min(95, Math.max(10, value + 1)))
+        }
+        request.onload = () => {
+          window.clearInterval(preparing)
+          const fileCount = Number(request.getResponseHeader('X-D05-Total-Files'))
+          if (Number.isFinite(fileCount)) setD05ExportFileCount(fileCount)
+          if (request.status >= 200 && request.status < 300) resolve(request.response as Blob)
+          else (request.response as Blob).text().then(text => {
+            try { const body = JSON.parse(text) as { detail?: string; title?: string }; reject(new Error(body.detail ?? body.title ?? `Ошибка API (${request.status})`)) }
+            catch { reject(new Error(`Ошибка API (${request.status})`)) }
+          })
+        }
+        request.onerror = () => { window.clearInterval(preparing); reject(new Error('Не удалось связаться с сервером')) }
+        request.onabort = () => { window.clearInterval(preparing); reject(new Error('Выгрузка отменена')) }
+        request.send()
+      })
+      setD05ExportProgress(100)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a'); link.href = url; link.download = `D05_TEST_${fileNameWithoutExtension(activeFile?.fileName ?? activeFileId)}.zip`; document.body.appendChild(link); link.click(); link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (error) { setD05ExportError(error instanceof Error ? error.message : 'Не удалось сформировать тестовый D05') }
+    finally { setD05ExportLoading(false) }
   }
   const showRecordCount = async () => {
     if (!activeFileId) return
@@ -272,7 +314,8 @@ export default function App() {
             <Select value={code} onValueChange={value => updateFilter(setCode, value)}><SelectTrigger className="w-[150px]"><SelectValue placeholder="Код результата" /></SelectTrigger><SelectContent><SelectItem value="all">Все коды</SelectItem>{resultCodes.map(value => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent></Select>
             <Input value={mo === 'all' ? '' : mo} onChange={event => updateFilter(setMo, event.target.value || 'all')} placeholder="Код МО" className="w-[140px]" />
             <Button variant="ghost" size="sm" onClick={resetRows}><X className="mr-1 size-4" />Сбросить</Button></CardContent></Card>
-          <Card className="overflow-hidden shadow-none"><CardHeader className="flex flex-row flex-wrap items-center gap-3 border-b py-4"><div><CardTitle className="text-base">Строки файла GF</CardTitle><CardDescription className="mt-1">{recordsPage?.fileName ?? activeFile?.fileName ?? 'Выберите GF'} · записи по текущим фильтрам</CardDescription></div><div className="ml-auto flex gap-2"><Button variant="outline" size="sm" disabled={!activeFileId || recordsLoading || recordCountLoading} onClick={() => void showRecordCount()}>Показать кол-во</Button><Button variant="outline" size="sm" disabled={!activeFileId || recordsLoading} onClick={exportCsv}><ArrowDownToLine className="mr-2 size-4" />Экспорт CSV</Button></div></CardHeader>
+          <Card className="overflow-hidden shadow-none"><CardHeader className="flex flex-row flex-wrap items-center gap-3 border-b py-4"><div><CardTitle className="text-base">Строки файла GF</CardTitle><CardDescription className="mt-1">{recordsPage?.fileName ?? activeFile?.fileName ?? 'Выберите GF'} · записи по текущим фильтрам</CardDescription></div><div className="ml-auto flex flex-wrap gap-2"><Button variant="outline" size="sm" disabled={!activeFileId || activeFile?.type !== 'GF' || recordsLoading || d05ExportLoading} onClick={() => void exportD05Test()}>{d05ExportLoading ? 'Формируем D05…' : 'Тестовая выгрузка D05'}</Button><Button variant="outline" size="sm" disabled={!activeFileId || recordsLoading || recordCountLoading} onClick={() => void showRecordCount()}>Показать кол-во</Button><Button variant="outline" size="sm" disabled={!activeFileId || recordsLoading} onClick={exportCsv}><ArrowDownToLine className="mr-2 size-4" />Экспорт CSV</Button></div></CardHeader>
+            {d05ExportLoading && <div className="border-b px-4 py-3" role="status" aria-live="polite"><div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm"><span>{d05ExportProgress < 10 ? 'Подготовка выгрузки на сервере…' : 'Передача архива…'}</span><span className="font-medium tabular-nums">{d05ExportProgress}% · {d05ExportFileCount === null ? 'подсчитываем файлы' : `${number(d05ExportFileCount)} файлов`}</span></div><div role="progressbar" aria-label="Прогресс выгрузки D05" aria-valuemin={1} aria-valuemax={100} aria-valuenow={d05ExportProgress} className="h-2.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${d05ExportProgress}%` }} /></div></div>}            {d05ExportError && <div className="p-3"><ErrorBox message={d05ExportError} /></div>}
             {recordsError && <div className="p-3"><ErrorBox message={recordsError} /></div>}
             <div className="relative min-h-[520px] overflow-x-auto"><Table><TableHeader><TableRow><TableHead>ЕНП</TableHead><TableHead>DN_PATIENT_ID</TableHead><TableHead>CODE_L / CODE_P</TableHead><TableHead>МО</TableHead><TableHead>Диагноз</TableHead><TableHead>Результат GST / GPT</TableHead><TableHead>Категория</TableHead></TableRow></TableHeader><TableBody>{recordsPage?.items.map(record => <TableRow key={record.id} onClick={() => void openRecord(record)} className="cursor-pointer"><TableCell className="font-mono text-xs">{record.enp ?? '—'}</TableCell><TableCell className="font-mono text-xs">{record.dnPatientId ?? '—'}</TableCell><TableCell className="font-mono text-xs"><div>{record.dnList?.code ?? '—'}</div><div className="mt-1 text-muted-foreground">{record.dnPlan?.code ?? '—'}</div></TableCell><TableCell>{record.moCode ?? record.patient?.attachMoCode ?? '—'}</TableCell><TableCell><Badge variant="outline" className="font-mono">{record.diagnosisCode ?? '—'}</Badge></TableCell><TableCell><div className="flex flex-col items-start gap-1"><ResultBadge type="GST" code={record.dnList?.resultCode} dictionaries={dictionaryMap} /><ResultBadge type="GPT" code={record.dnPlan?.resultCode} dictionaries={dictionaryMap} /></div></TableCell><TableCell><div className="flex flex-col items-start gap-1">{record.dnList?.resultCode != null && <Badge variant="outline" className={`font-normal ${categoryTone[dictionaryMap.get(resultLookupKey('GST', record.dnList.resultCode))?.category ?? 'accepted']}`}>{categoryLabel(dictionaryMap.get(resultLookupKey('GST', record.dnList.resultCode))?.category ?? 'accepted')}</Badge>}{record.dnPlan?.resultCode != null && <Badge variant="outline" className={`font-normal ${categoryTone[dictionaryMap.get(resultLookupKey('GPT', record.dnPlan.resultCode))?.category ?? 'accepted']}`}>{categoryLabel(dictionaryMap.get(resultLookupKey('GPT', record.dnPlan.resultCode))?.category ?? 'accepted')}</Badge>}</div></TableCell></TableRow>)}</TableBody></Table>{!recordsLoading && !recordsError && !recordsPage?.items.length && <Empty>Записи не найдены. Измените параметры фильтра.</Empty>}{recordsLoading && <div className="absolute inset-0 z-10 grid place-items-center bg-background/75 px-4 py-6 backdrop-blur-[2px]"><RecordsLoader /></div>}</div>
             <div className="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3"><span className="text-xs text-muted-foreground">Страница {recordsPage?.page ?? 1} · {recordsPage?.pageSize ?? 12} записей на странице</span><div className="flex gap-2"><Button variant="outline" size="sm" disabled={!recordsPage || page <= 1 || recordsLoading} onClick={() => setPage(page - 1)}><ArrowLeft className="mr-1 size-4" />Назад</Button><Button variant="outline" size="sm" disabled={!recordsPage?.hasMore || recordsLoading} onClick={() => setPage(page + 1)}>Вперёд<ArrowRight className="ml-1 size-4" /></Button></div></div>

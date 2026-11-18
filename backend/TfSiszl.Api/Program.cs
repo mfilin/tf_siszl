@@ -25,6 +25,14 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
 
 var app = builder.Build();
 
+app.Logger.LogInformation("""
+    TF_SISZL — BACKEND API
+    Реализовано: журнал GST/GPT/GF, карточки файлов и записей GF, фильтры и постраничная выборка.
+    Экспорт: CSV, группировка по МО и тестовые ZIP-пакеты D05.
+    Дополнительно: аналитика результатов, справочники, health/readiness, Swagger.
+    Swagger: /swagger | API: /api/v1/dn
+    """);
+
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
