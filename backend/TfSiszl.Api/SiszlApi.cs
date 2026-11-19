@@ -384,77 +384,130 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
         var requestedMo = string.IsNullOrWhiteSpace(moCode) ? null : moCode.Trim();
         await using var connection = OpenConnection();
         await connection.OpenAsync(ct);
-        var fileCountSql = """
-            WITH candidates AS (
-                SELECT p.ATTACH_MCODE AS MoCode, p.ENP, p.DR, p.W, p.GROUP_RH_CD, p.GROUP_RH_DS,
-                    ROW_NUMBER() OVER (PARTITION BY p.ENP, p.GROUP_RH_CD ORDER BY p.id) AS duplicate_number
-                FROM dbo.gf_person p
-                INNER JOIN dbo.gf_dn_list_result l ON l.person_id=p.id AND l.DN_LIST_RESULT_CODE='207'
-                WHERE p.import_id=@ImportId
-                  AND LTRIM(RTRIM(p.ATTACH_MCODE)) LIKE '34%'
-            )
-            SELECT COUNT(DISTINCT MoCode)
-            FROM candidates
-            WHERE duplicate_number=1
-              AND MoCode IS NOT NULL AND LTRIM(RTRIM(MoCode))<>'' AND LEN(LTRIM(RTRIM(MoCode)))<=6
-              AND ENP IS NOT NULL AND LEN(LTRIM(RTRIM(ENP))) BETWEEN 1 AND 16
-              AND DR IS NOT NULL AND W IN (1,2)
-              AND GROUP_RH_CD BETWEEN 0 AND 999
-              AND GROUP_RH_DS IS NOT NULL AND LEN(LTRIM(RTRIM(GROUP_RH_DS))) BETWEEN 1 AND 6
-            """ + (requestedMo is null ? ";" : " AND MoCode=@MoCode;");        await using (var countCommand = new SqlCommand(fileCountSql, connection))
-        {
-            countCommand.Parameters.AddWithValue("@ImportId", importId);
-            if (requestedMo is not null) countCommand.Parameters.AddWithValue("@MoCode", requestedMo);
-            var fileCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync(ct), CultureInfo.InvariantCulture);
-            progressStore.SetTotal(progressId, fileCount, fileCount == 0 ? "Нет файлов для выгрузки" : "Чтение записей");
-        }
-        var existsSql = "SELECT TOP (1) 1 FROM dbo.gf_person p JOIN dbo.gf_dn_list_result l ON l.person_id=p.id WHERE p.import_id=@ImportId AND l.DN_LIST_RESULT_CODE='207' AND LTRIM(RTRIM(p.ATTACH_MCODE)) LIKE '34%'" + (requestedMo is null ? ";" : " AND p.ATTACH_MCODE=@MoCode;");
-        await using (var existsCommand = new SqlCommand(existsSql, connection))
-        {
-            existsCommand.Parameters.AddWithValue("@ImportId", importId);
-            if (requestedMo is not null) existsCommand.Parameters.AddWithValue("@MoCode", requestedMo);
-            if (await existsCommand.ExecuteScalarAsync(ct) is null)
-                return Results.Problem(title: "Нет записей с кодом 207", detail: "В выбранном GF и МО не найдено записей с DN_LIST_RESULT_CODE=207.", statusCode: StatusCodes.Status422UnprocessableEntity);
-        }
+        const string createTempSql = """
+            CREATE TABLE #d05 (
+                Skip tinyint NOT NULL,
+                SkipReason nvarchar(64) NULL,
+                Id bigint NOT NULL,
+                MoCode varchar(20) NULL,
+                Enp varchar(16) NULL,
+                DnPatientId varchar(100) NULL,
+                SexCode int NULL,
+                BirthDate date NULL,
+                GroupRhCode int NULL,
+                DiagnosisCode varchar(10) NULL,
+                GroupRhProfile varchar(1000) NULL,
+                DoctorType int NULL,
+                TriggerDate date NULL,
+                TriggerInvoiceDate date NULL,
+                TriggerDiagnosisCode nvarchar(20) NULL,
+                TriggerMoCode nvarchar(40) NULL,
+                TriggerHistoryNumber nvarchar(100) NULL,
+                TriggerCaseId nvarchar(100) NULL
+            );
+            CREATE CLUSTERED INDEX CX_d05_Skip_MoCode_Enp_GroupRhCode_Id
+                ON #d05 (Skip, MoCode, Enp, GroupRhCode, Id);
+            """;
+        await using (var createCommand = new SqlCommand(createTempSql, connection))
+            await createCommand.ExecuteNonQueryAsync(ct);
 
         var moCondition = requestedMo is null ? string.Empty : " AND p.ATTACH_MCODE=@MoCode";
-        var sql = """
+        var populateTempSql = """
             WITH candidates AS (
-                SELECT p.id AS Id, p.ATTACH_MCODE AS MoCode, p.ENP AS Enp, p.DN_PATIENT_ID AS DnPatientId,
-                    p.W AS SexCode, p.DR AS BirthDate, p.GROUP_RH_CD AS GroupRhCode,
-                    p.GROUP_RH_DS AS DiagnosisCode, p.GROUP_RH_PROFILE AS GroupRhProfile, p.DN_PRVS AS DoctorType,
-                    ROW_NUMBER() OVER (PARTITION BY p.ENP, p.GROUP_RH_CD ORDER BY p.id) AS duplicate_number
+                SELECT CONVERT(bigint, p.id) AS Id, p.ATTACH_MCODE AS MoCode, p.ENP AS Enp,
+                    p.DN_PATIENT_ID AS DnPatientId, p.W AS SexCode, p.DR AS BirthDate,
+                    p.GROUP_RH_CD AS GroupRhCode, p.GROUP_RH_DS AS DiagnosisCode,
+                    p.GROUP_RH_PROFILE AS GroupRhProfile, p.DN_PRVS AS DoctorType,
+                    ROW_NUMBER() OVER (PARTITION BY p.ENP, p.GROUP_RH_CD ORDER BY p.id) AS DuplicateNumber
                 FROM dbo.gf_person p
-                INNER JOIN dbo.gf_dn_list_result l ON l.person_id=p.id AND l.DN_LIST_RESULT_CODE='207'
+                INNER JOIN dbo.gf_dn_list_result l WITH (INDEX(IX_gf_dn_list_result_207_person_id))
+                    ON l.person_id=p.id AND l.DN_LIST_RESULT_CODE='207'
                 WHERE p.import_id=@ImportId
                   AND LTRIM(RTRIM(p.ATTACH_MCODE)) LIKE '34%'
             """ + moCondition + """
-            ), selected AS (
-                SELECT * FROM candidates WHERE duplicate_number=1
-            ), trigger_ids AS (
-                SELECT t.person_id, MIN(t.id) AS trigger_id
-                FROM dbo.gf_trigger t
-                INNER JOIN selected s ON s.Id=t.person_id
-                GROUP BY t.person_id
             )
-            SELECT s.Id, s.MoCode, s.Enp, s.DnPatientId, s.SexCode, s.BirthDate, s.GroupRhCode,
-                s.DiagnosisCode, s.GroupRhProfile, s.DoctorType,
-                t.TRIGGER_DT AS TriggerDate, t.TRIGGER_DSCHET AS TriggerInvoiceDate,
-                t.TRIGGER_DS_CD AS TriggerDiagnosisCode, t.TRIGGER_MCODE AS TriggerMoCode,
-                t.TRIGGER_SL_NHISTORY AS TriggerHistoryNumber, t.TRIGGER_IDCASE AS TriggerCaseId
-            FROM selected s
-            LEFT JOIN trigger_ids ti ON ti.person_id=s.Id
-            LEFT JOIN dbo.gf_trigger t ON t.id=ti.trigger_id
-            ORDER BY s.MoCode, s.Enp, s.GroupRhCode, s.Id;
+            INSERT INTO #d05 (
+                Skip, SkipReason, Id, MoCode, Enp, DnPatientId, SexCode, BirthDate,
+                GroupRhCode, DiagnosisCode, GroupRhProfile, DoctorType,
+                TriggerDate, TriggerInvoiceDate, TriggerDiagnosisCode, TriggerMoCode,
+                TriggerHistoryNumber, TriggerCaseId)
+            SELECT
+                CASE WHEN c.DuplicateNumber>1 THEN 2 WHEN reasons.SkipReason IS NULL THEN 0 ELSE 1 END,
+                CASE WHEN c.DuplicateNumber>1 THEN NULL ELSE reasons.SkipReason END,
+                c.Id, c.MoCode, c.Enp, c.DnPatientId, c.SexCode, c.BirthDate,
+                c.GroupRhCode, c.DiagnosisCode, c.GroupRhProfile, c.DoctorType,
+                t.TRIGGER_DT, t.TRIGGER_DSCHET, t.TRIGGER_DS_CD, t.TRIGGER_MCODE,
+                t.TRIGGER_SL_NHISTORY, t.TRIGGER_IDCASE
+            FROM candidates c
+            OUTER APPLY (
+                SELECT TOP (1) tr.*
+                FROM dbo.gf_trigger tr
+                WHERE tr.person_id=c.Id AND c.DuplicateNumber=1
+                ORDER BY tr.id
+            ) t
+            CROSS APPLY (SELECT
+                CASE
+                    WHEN c.DuplicateNumber>1 THEN NULL
+                    WHEN c.MoCode IS NULL OR LEN(LTRIM(RTRIM(c.MoCode)))=0 THEN N'нет ATTACH_MCODE'
+                    WHEN LEN(LTRIM(RTRIM(c.MoCode)))>6 THEN N'ATTACH_MCODE длиннее 6 знаков'
+                    WHEN c.Enp IS NULL OR LEN(LTRIM(RTRIM(c.Enp))) NOT BETWEEN 1 AND 16 THEN N'нет корректного ЕНП'
+                    WHEN c.BirthDate IS NULL THEN N'нет даты рождения'
+                    WHEN c.SexCode IS NULL OR c.SexCode NOT IN (1,2) THEN N'пол не равен 1 или 2'
+                    WHEN c.GroupRhCode IS NULL OR c.GroupRhCode NOT BETWEEN 0 AND 999 THEN N'нет корректного GROUP_RH_CD'
+                    WHEN c.DiagnosisCode IS NULL OR LEN(LTRIM(RTRIM(c.DiagnosisCode))) NOT BETWEEN 1 AND 6 THEN N'нет корректного GROUP_RH_DS'
+                    ELSE NULL
+                END AS SkipReason) reasons;
             """;
+        await using (var populateCommand = new SqlCommand(populateTempSql, connection) { CommandTimeout = 300 })
+        {
+            populateCommand.Parameters.Add("@ImportId", SqlDbType.BigInt).Value = importId;
+            if (requestedMo is not null)
+                populateCommand.Parameters.Add("@MoCode", SqlDbType.VarChar, 20).Value = requestedMo;
+            await populateCommand.ExecuteNonQueryAsync(ct);
+        }
 
+        var skipped = new Dictionary<string, int>(StringComparer.Ordinal);
+        var duplicateCount = 0L;
+        var candidateCount = 0L;
+        var fileCount = 0;
+        const string summarySql = """
+            SELECT Skip, SkipReason, COUNT_BIG(*) AS CandidateRows,
+                COUNT(DISTINCT CASE WHEN Skip=0 THEN MoCode END) AS MoCount
+            FROM #d05
+            GROUP BY Skip, SkipReason;
+            """;
+        await using (var summaryCommand = new SqlCommand(summarySql, connection))
+        await using (var summaryReader = await summaryCommand.ExecuteReaderAsync(ct))
+        {
+            while (await summaryReader.ReadAsync(ct))
+            {
+                var skip = summaryReader.GetByte(0);
+                var reason = summaryReader.IsDBNull(1) ? null : summaryReader.GetString(1);
+                var count = summaryReader.GetInt64(2);
+                candidateCount += count;
+                if (skip == 0) fileCount = summaryReader.GetInt32(3);
+                else if (skip == 1 && reason is not null) skipped[reason] = checked((int)count);
+                else if (skip == 2) duplicateCount = count;
+            }
+        }
+        if (candidateCount == 0)
+            return Results.Problem(title: "Нет записей с кодом 207", detail: "В выбранном GF и МО не найдено записей с DN_LIST_RESULT_CODE=207.", statusCode: StatusCodes.Status422UnprocessableEntity);
+        progressStore.SetTotal(progressId, fileCount, fileCount == 0 ? "Нет файлов для выгрузки" : "Чтение записей");
+
+        const string readTempSql = """
+            SELECT Id, MoCode, Enp, DnPatientId, SexCode, BirthDate, GroupRhCode,
+                DiagnosisCode, GroupRhProfile, DoctorType,
+                TriggerDate, TriggerInvoiceDate, TriggerDiagnosisCode, TriggerMoCode,
+                TriggerHistoryNumber, TriggerCaseId
+            FROM #d05
+            WHERE Skip=0
+            ORDER BY Skip, MoCode, Enp, GroupRhCode, Id;
+            """;
         var generatedOn = DateTime.UtcNow.Date;
         var deadline = new DateTime(generatedOn.Year, generatedOn.Month, 16);
         var sourceName = Path.GetFileNameWithoutExtension(file.FileName);
         var yyMm = sourcePeriod.ToString("yyMM", CultureInfo.InvariantCulture);
         var baseName = $"D05_TEST_{sourceName}";
-        var skipped = new Dictionary<string, int>(StringComparer.Ordinal);
-        void Skip(string reason) => skipped[reason] = skipped.GetValueOrDefault(reason) + 1;
         var emittedCount = 0;
         string? currentMo = null;
         var packageTasks = new List<D05TaskData>();
@@ -479,29 +532,20 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
                 packageTasks.Clear();
             }
 
-            await using (var command = new SqlCommand(sql, connection) { CommandTimeout = 300 })
+            await using (var command = new SqlCommand(readTempSql, connection) { CommandTimeout = 300 })
             {
-                command.Parameters.AddWithValue("@ImportId", importId);
-                if (requestedMo is not null) command.Parameters.AddWithValue("@MoCode", requestedMo);
                 await using var reader = await command.ExecuteReaderAsync(ct);
                 while (await reader.ReadAsync(ct))
                 {
-                    var rowMo = reader.IsDBNull(1) ? null : reader.GetString(1).Trim();
+                    var rowMo = reader.GetString(1).Trim();
                     if (!string.Equals(rowMo, currentMo, StringComparison.Ordinal))
                     {
                         await WritePackageAsync();
                         currentMo = rowMo;
                     }
 
-                    if (string.IsNullOrEmpty(rowMo)) { Skip("нет ATTACH_MCODE"); continue; }
-                    if (rowMo.Length > 6) { Skip("ATTACH_MCODE длиннее 6 знаков"); continue; }
-                    var enp = reader.IsDBNull(2) ? null : reader.GetString(2).Trim();
-                    if (string.IsNullOrEmpty(enp) || enp.Length > 16) { Skip("нет корректного ЕНП"); continue; }
-                    if (reader.IsDBNull(5)) { Skip("нет даты рождения"); continue; }
-                    if (reader.IsDBNull(4) || reader.GetInt32(4) is not (1 or 2)) { Skip("пол не равен 1 или 2"); continue; }
-                    if (reader.IsDBNull(6) || reader.GetInt32(6) is < 0 or > 999) { Skip("нет корректного GROUP_RH_CD"); continue; }
-                    var diagnosis = reader.IsDBNull(7) ? null : reader.GetString(7).Trim();
-                    if (string.IsNullOrEmpty(diagnosis) || diagnosis.Length > 6) { Skip("нет корректного GROUP_RH_DS"); continue; }
+                    var enp = reader.GetString(2).Trim();
+                    var diagnosis = reader.GetString(7).Trim();
 
                     var sex = reader.GetInt32(4);
                     var groupCode = reader.GetInt32(6);
@@ -542,7 +586,7 @@ internal sealed class SiszlApi(SqlConnectionFactory connectionFactory, DatabaseO
                 await readmeWriter.WriteLineAsync("Names are synthetic; IDPAC=0; TASK_ID is sequential from 1 across this export; REPEAT_CNT=1; previous task is omitted.");
                 await readmeWriter.WriteLineAsync("CODE_MO and CODEM are copied from ATTACH_MCODE. Dead/uninsured exclusions are not applied.");
                 await readmeWriter.WriteLineAsync("GROUP_RH_NAME is generated as group_rh={GROUP_RH_CD}. TRIGGER is copied when available.");
-                await readmeWriter.WriteLineAsync($"Source GF: {file.FileName}; D05 tasks: {emittedCount}; skipped: {skipped.Values.Sum()}.");
+                await readmeWriter.WriteLineAsync($"Source GF: {file.FileName}; candidate rows: {candidateCount}; duplicates: {duplicateCount}; D05 tasks: {emittedCount}; skipped: {skipped.Values.Sum()}.");
                 foreach (var item in skipped.OrderBy(x => x.Key, StringComparer.Ordinal))
                     await readmeWriter.WriteLineAsync($"Skipped ({item.Value}): {item.Key}.");
             }

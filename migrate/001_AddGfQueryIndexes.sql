@@ -5,6 +5,8 @@
   gf_person contains millions of rows, so index creation can take time and use
   additional disk space. This file has been saved but has NOT been applied.
 */
+SET QUOTED_IDENTIFIER ON;
+GO
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 

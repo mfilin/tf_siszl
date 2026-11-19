@@ -2,7 +2,7 @@
 
 ## Current index inventory
 
-The inventory below was read from `TF_SISZL` on 2026-10-31.
+The base inventory below was read from `TF_SISZL` on 2026-10-31. Migrations `001` and `002` were applied on 2026-11-19.
 
 | Table | Existing index | Keys | Included columns |
 | --- | --- | --- | --- |
@@ -13,9 +13,15 @@ The inventory below was read from `TF_SISZL` on 2026-10-31.
 | `gf_dn_plan_result` | `PK__gf_dn_pl__3213E83F2E674E5D` | `id` | — |
 | `gf_dn_plan_result` | `IX_person_id` | `person_id` | `CODE_P`, `DN_PLAN_RESULT_CODE` |
 | `gf_trigger` | `PK__gf_trigg__3213E83F5B889582` | `id` | — |
+| `gf_person` | `IX_gf_person_import_id_ENP_id` | `import_id`, `ENP`, `id` | `DN_PATIENT_ID`, `ATTACH_MCODE` |
+| `gf_person` | `IX_gf_person_import_id_ATTACH_MCODE_ENP_id` | `import_id`, `ATTACH_MCODE`, `ENP`, `id` | `DN_PATIENT_ID` |
+| `gf_trigger` | `IX_gf_trigger_person_id_id` | `person_id`, `id` | — |
+| `gf_dn_list_result` | `IX_gf_dn_list_result_207_person_id` | `person_id` | Filter: `DN_LIST_RESULT_CODE = '207'` |
 
 The main gaps found were an index beginning with `gf_person.import_id` (used to select a GF file) and an index beginning with `gf_trigger.person_id` (used to fetch trigger details). Existing result tables already have indexes beginning with `person_id`.
 
 ## Applying a migration
 
-`001_AddGfQueryIndexes.sql` prepares indexes for file/ЕНП paging, МО filtering, and trigger lookups. It is idempotent but has **not** been applied to the database. Review and run it during a maintenance window: `gf_person` has about 5.9 million rows and `gf_trigger` about 5.3 million rows.
+`001_AddGfQueryIndexes.sql` adds indexes for file/ЕНП paging, МО filtering, and trigger lookups. `002_AddGfResult207Index.sql` adds a filtered `person_id` index for result code 207. Both scripts are idempotent and set `QUOTED_IDENTIFIER ON` for SQL Server index creation.
+
+Both migrations have been applied to `TF_SISZL`. Verify the target database before reapplying elsewhere; index creation on the multi-million-row GF tables can take time and use additional disk space.
