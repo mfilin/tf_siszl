@@ -23,6 +23,17 @@ const categoryTone: Record<ResultCategory, string> = {
 }
 const number = (value: number | null | undefined) => value == null ? '—' : new Intl.NumberFormat('ru-RU').format(value)
 const fileNameWithoutExtension = (fileName: string) => fileName.replace(/\.[^.]+$/, '')
+const createProgressId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16))
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  return `progress-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
 const statusTone: Record<ApiStatus, string> = { queued: 'text-zinc-700 bg-zinc-50 border-zinc-200', processing: 'text-amber-700 bg-amber-50 border-amber-200', processed: 'text-emerald-700 bg-emerald-50 border-emerald-200', sent: 'text-blue-700 bg-blue-50 border-blue-200', failed: 'text-rose-700 bg-rose-50 border-rose-200' }
 const resultLookupKey = (type: 'GST' | 'GPT', code?: string | number | null) => `${type}:${code ?? ''}`
 function Empty({ children }: { children: string }) { return <div className="px-6 py-14 text-center text-sm text-muted-foreground"><div className="mx-auto mb-3 grid size-10 place-items-center rounded-xl bg-muted"><Filter className="size-4" /></div>{children}</div> }
@@ -168,7 +179,7 @@ export default function App() {
   }
   const exportD05Test = async () => {
     if (!activeFileId) return
-    const progressId = crypto.randomUUID()
+    const progressId = createProgressId()
     setD05ExportLoading(true); setD05ExportError(''); setD05ExportProgress(1); setD05ExportFileCount(null); setD05ExportCompletedFiles(0); setD05ExportStatus('Подготовка выборки')
     let progressPolling = true
     const readProgress = async () => {
